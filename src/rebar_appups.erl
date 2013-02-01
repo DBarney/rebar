@@ -32,7 +32,7 @@
 -export(['generate-appups'/2]).
 
 -define(APPUPFILEFORMAT, "%% appup generated for ~p by rebar (~p)~n"
-        "{~p, [{~p, ~p}], [{~p, []}]}.~n").
+        "{~p,~n\t[{~p, ~p}],~n\t[{~p, ~p}]}.~n").
 
 %% ====================================================================
 %% Public API
@@ -137,26 +137,39 @@ generate_appup_files(NewVerPath, OldVerPath, [{App, {OldVer, NewVer}}|Rest]) ->
     NewEbinDir = filename:join([NewVerPath, "lib",
                                 atom_to_list(App) ++ "-" ++ NewVer, "ebin"]),
 
-    {AddedFiles, DeletedFiles, ChangedFiles} = beam_lib:cmp_dirs(NewEbinDir,
-                                                                 OldEbinDir),
+    case beam_lib:cmp_dirs(NewEbinDir,OldEbinDir) of
+        {error,beam_lib,Reason} ->
+            ?ABORT("Unable to combare beam dirs: ~p, did you forget to disable .ez archives?",[Reason]);
+        {AddedFiles, DeletedFiles, ChangedFiles} ->
 
-    Added = [generate_instruction(added, File) || File <- AddedFiles],
-    Deleted = [generate_instruction(deleted, File) || File <- DeletedFiles],
-    Changed = [generate_instruction(changed, File) || File <- ChangedFiles],
+            UpAdded = [generate_instruction(added, File) || File <- AddedFiles],
+            UpDeleted = [generate_instruction(deleted, File) || File <- DeletedFiles],
+            UpChanged = [generate_instruction(changed, File) || File <- ChangedFiles],
 
-    Inst = lists:append([Added, Deleted, Changed]),
+            DownAdded = lists:reverse([inverse(Cmd) || Cmd <- UpAdded]),
+            DownDeleted = lists:reverse([inverse(Cmd) || Cmd <- UpDeleted]),
+            DownChanged = lists:reverse([inverse(Cmd) || Cmd <- UpChanged]),
 
-    AppUpFile = filename:join([NewEbinDir, atom_to_list(App) ++ ".appup"]),
 
-    ok = file:write_file(AppUpFile,
-                         io_lib:fwrite(?APPUPFILEFORMAT,
-                                       [App, rebar_utils:now_str(), NewVer,
-                                        OldVer, Inst, OldVer])),
+            Inst = lists:append([UpAdded, UpDeleted, UpChanged]),
+            UnInst = lists:append([DownAdded, DownDeleted, DownChanged]),
 
-    ?CONSOLE("Generated appup for ~p~n", [App]),
-    generate_appup_files(NewVerPath, OldVerPath, Rest);
+            AppUpFile = filename:join([NewEbinDir, atom_to_list(App) ++ ".appup"]),
+
+            ok = file:write_file(AppUpFile,
+                                 io_lib:fwrite(?APPUPFILEFORMAT,
+                                               [App, rebar_utils:now_str(), NewVer,
+                                                OldVer, Inst, OldVer, UnInst])),
+
+            ?CONSOLE("Generated appup for ~p~n", [App]),
+            generate_appup_files(NewVerPath, OldVerPath, Rest)
+    end;
 generate_appup_files(_, _, []) ->
     ?CONSOLE("Appup generation complete~n", []).
+
+inverse({add_module, Name})-> {delete_module, Name};
+inverse({delete_module, Name})-> {add_module, Name};
+inverse(Cmd)-> Cmd. %% every thing else is its own opposite
 
 generate_instruction(added, File) ->
     Name = list_to_atom(file_to_name(File)),
